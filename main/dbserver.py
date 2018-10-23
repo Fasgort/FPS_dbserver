@@ -1,11 +1,18 @@
+import os, sys
+import PIL
+from PIL import Image
 from time import sleep
 import serial
-ser = serial.Serial('/dev/tty.usbmodem1d11', 9600) # Establish the connection on a specific port
-counter = 32 # Below 32 everything in ASCII is gibberish
+ser = serial.Serial('COM3', 115200) # Establish the connection on a specific port
 while True:
-     counter +=1
-     ser.write(str(chr(counter))) # Convert the decimal number to ASCII then send it to the Arduino
-     print ser.readline() # Read the newest output from the Arduino
-     sleep(.1) # Delay for one tenth of a second
-     if counter == 255:
-     counter = 32
+     #im1 = PIL.Image.frombytes("L",(160,120),ser.read(19200))
+     #im1.save("D:\\Fasgort\\Desktop\\TFM\\FPS_dbserver\\main\\fingerprint_test.bmp")
+     #ser.read(2);
+     
+     im2 = PIL.Image.frombytes("L",(232,139),ser.read(32248))
+     #im2 = PIL.Image.frombytes("L",(232,224),ser.read(52116))
+     im2.save("D:\\Fasgort\\Desktop\\TFM\\FPS_dbserver\\main\\fingerprint_test2.bmp")
+     ser.read(2);
+
+     ser.close();
+     sys.exit()
