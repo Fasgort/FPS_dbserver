@@ -1,5 +1,9 @@
+#!/usr/bin/env python
+
 import sys
 import sqlite3
+import socket
+from datetime import datetime
  
 conn = sqlite3.connect("fingerprint.db")
  
@@ -43,12 +47,123 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS log
 
 ### inserting example data
 
-with open("template.dat", 'rb') as output:
-	buffer = output.read(498)
-	user = (1, 'David López Chica', 1, buffer, 0)
-	cursor.execute("INSERT INTO users VALUES (?,?,?,?,?)", user)
-	conn.commit()
-	output.close()
-			   
-conn.close()
-sys.exit()
+#with open("template.dat", 'rb') as output:
+#	buffer = output.read(498)
+#	user = (None, 'David López Chica', 1, buffer, 0)
+#	cursor.execute("INSERT INTO users VALUES (?,?,?,?,?)", user)
+#	conn.commit()
+#	output.close()
+
+
+HOST = ''	# Symbolic name meaning all available interfaces
+PORT = 40444	# Arbitrary non-privileged port
+
+# Listeners
+
+def enroller_listener(d, s):
+
+	data = d[0]
+	addr = d[1]
+	length = len(d[0])
+	
+	if data[4] == 17: # 0x11 == 17(Enrolling)
+		
+		s.sendto(bytes([1, 219, 0, 1, 170]), addr) # 0x01 0xDB 0x00 0x01 0xAA == 1 219 0 1 170 (AA okay)
+		return
+
+	elif data[4] == 29: # 0x1D == 29 (Sending data)
+	
+		checksum_reported = 0
+		checksum_data = 256 # Data packet starts with 0x5A + 0xA5 + 0x00 + 0x01 = 256
+		fingerprint = bytearray()
+		
+		for x in range(0,8):
+		
+			# receive data from client (data, addr)
+			d = s.recvfrom(64)
+			data = d[0]
+			addr = d[1]
+			length = len(d[0])
+		
+			if not data:
+				break
+		
+			print(data.hex())
+		
+			if x == 7:
+				checksum_reported = data[length-2] + data[length-1]*256 # Little endian
+				print('Checksum calculated = ' + str(checksum_reported))
+				for i in range(0,length-2):
+					checksum_data += data[i]
+					fingerprint.append(data[i])
+
+			else:
+				for i in range(0,length):
+					checksum_data += data[i]
+					fingerprint.append(data[i])
+
+			print('Checksum reported in the data was: ' + str(checksum_data%65536))
+
+		user = (None, 'David López Chica', 1, fingerprint, datetime.now())
+		cursor.execute("INSERT INTO users VALUES (?,?,?,?,?)", user)
+		conn.commit()
+
+		return
+	
+	else:
+		
+		s.sendto(bytes([1, 219, 0, 1, 238]), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
+		return
+	
+def scanner_listener(d, s):
+	return
+
+listener_switcher = {
+#	219: server_listener, # DB
+	238: enroller_listener, # EE
+	253: scanner_listener # FD
+}
+
+def code_interpreter(argument):
+    # Get the function from switcher dictionary
+    func = listener_switcher.get(argument, "error")
+    # Return the function
+    return func
+
+# Datagram (udp) socket
+try :
+	s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+	print('Socket created')
+except (socket.error, msg):
+	print('Failed to create socket. Error Code : ' + str(msg[0]) + ' Message ' + msg[1])
+	sys.exit()
+
+
+# Bind socket to local host and port
+try:
+	s.bind((HOST, PORT))
+except (socket.error, msg):
+	print('Bind failed. Error Code : ' + str(msg[0]) + ' Message ' + msg[1])
+	sys.exit()
+	
+print('Socket bind complete')
+
+while 1:
+
+	# receive data from client (data, addr)
+	d = s.recvfrom(64)
+	data = d[0]
+	addr = d[1]
+	
+	if not data or len(d[0])<5 or data[0] != 1: # First byte has always to be 0x01
+		break
+
+	listener = code_interpreter(data[1])
+	if listener == 'error':
+		s.sendto(bytes([1, 219, 0, 1, 238]), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
+		break
+	
+	print(data.hex())
+	listener(d, s)
+	
+s.close()
