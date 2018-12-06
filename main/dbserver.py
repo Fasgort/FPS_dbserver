@@ -116,8 +116,29 @@ def enroller_listener(d, s):
 		return
 	
 def scanner_listener(d, s):
-	return
 
+	data = d[0]
+	addr = d[1]
+	length = len(d[0])
+	
+	if data[4] == 34: # 0x22 == 34(SyncDB)
+	
+		s.sendto(bytes([1, 219, 0, 1, 170]), addr) # 0x01 0xDB 0x00 0x01 0xAA == 1 219 0 1 170 (AA okay)
+		return
+	
+	elif data[4] == 48: # 0x30 == 48(Requesting fingerprint)
+
+		fingerprint_requested = data[5]
+		cursor.execute("SELECT fingerprint_data FROM users WHERE ID_user=?", (str(fingerprint_requested)))
+		fingerprint_data = cursor.fetchone()[0]
+		s.sendto(fingerprint_data, addr)
+		return
+		
+	else:
+	
+		s.sendto(bytes([1, 219, 0, 1, 238]), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
+		return
+	
 listener_switcher = {
 #	219: server_listener, # DB
 	238: enroller_listener, # EE
