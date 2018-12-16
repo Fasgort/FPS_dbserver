@@ -129,7 +129,7 @@ def scanner_listener(d, s):
 	elif data[4] == 48: # 0x30 == 48(Requesting fingerprint)
 
 		fingerprint_requested = data[5]
-		cursor.execute("SELECT fingerprint_data FROM users WHERE ID_user=?", (str(fingerprint_requested)))
+		cursor.execute("SELECT fingerprint_data FROM users WHERE ID_user=?", (str(fingerprint_requested),))
 		fingerprint_data = cursor.fetchone()[0]
 		s.sendto(fingerprint_data, addr)
 		return
