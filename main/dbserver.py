@@ -4,6 +4,7 @@ import sys
 import sqlite3
 import socket
 from datetime import datetime
+from SuperFastHash import SuperFastHash as SFHash
  
 conn = sqlite3.connect("fingerprint.db")
  
@@ -12,14 +13,14 @@ cursor = conn.cursor()
 ### creating tables
 
 
-# ID_user, user_name, group, template_data, signup_date expressed in UNIX time
+# ID_user, user_name, group, template_data, template_hash, signup_date expressed in UNIX time
 # group works as linux privileges work, in this case:
 # 0111 means first number is admin, second is group 1, third is group 2, fourth is group 3...
 # So this user is not admin, but is a user of the three first groups
 cursor.execute("""CREATE TABLE IF NOT EXISTS users
                   (ID_user INTEGER PRIMARY KEY, user_name TEXT NOT NULL,
                   group_user INTEGER NOT NULL, fingerprint_data BLOB NOT NULL,
-                  fingerprint_scan_date INTEGER NOT NULL) 
+                  fingerprint_hash INTEGER NOT NULL, fingerprint_scan_date INTEGER NOT NULL) 
                """)
 
 # ID_FPS, signup_date (unix time), location, group_access
@@ -43,16 +44,6 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS log
                   CONSTRAINT fk_fps FOREIGN KEY (ID_FPS)
                   REFERENCES fps(ID_FPS))
                """)
-
-
-### inserting example data
-
-#with open("template.dat", 'rb') as output:
-#	buffer = output.read(498)
-#	user = (None, 'David López Chica', 1, buffer, 0)
-#	cursor.execute("INSERT INTO users VALUES (?,?,?,?,?)", user)
-#	conn.commit()
-#	output.close()
 
 
 HOST = ''	# Symbolic name meaning all available interfaces
@@ -92,7 +83,7 @@ def enroller_listener(d, s):
 		
 			if x == 7:
 				checksum_reported = data[length-2] + data[length-1]*256 # Little endian
-				print('Checksum calculated = ' + str(checksum_reported))
+				print('Checksum reported from the FPS = ' + str(checksum_reported))
 				for i in range(0,length-2):
 					checksum_data += data[i]
 					fingerprint.append(data[i])
@@ -102,10 +93,10 @@ def enroller_listener(d, s):
 					checksum_data += data[i]
 					fingerprint.append(data[i])
 
-			print('Checksum reported in the data was: ' + str(checksum_data%65536))
+			print('Checksum calculated up to this point = ' + str(checksum_data%65536))
 
-		user = (None, 'David López Chica', 1, fingerprint, datetime.now())
-		cursor.execute("INSERT INTO users VALUES (?,?,?,?,?)", user)
+		user = (None, 'David López Chica', 1, fingerprint, SFHash(fingerprint), datetime.now())
+		cursor.execute("INSERT INTO users VALUES (?,?,?,?,?,?)", user)
 		conn.commit()
 
 		return
@@ -128,10 +119,26 @@ def scanner_listener(d, s):
 	
 	elif data[4] == 48: # 0x30 == 48(Requesting fingerprint)
 
-		fingerprint_requested = data[5]
-		cursor.execute("SELECT fingerprint_data FROM users WHERE ID_user=?", (str(fingerprint_requested),))
+		fingerprint_hash_requested = int.from_bytes([data[5], data[6], data[7], data[8]], byteorder='big')
+		cursor.execute("SELECT fingerprint_data FROM users WHERE fingerprint_hash=?", (str(fingerprint_hash_requested),))
 		fingerprint_data = cursor.fetchone()[0]
 		s.sendto(fingerprint_data, addr)
+		return
+	
+	elif data[4] == 93: # 0x5D == 93(Requesting partial DDBB download)
+		
+		return
+	
+	elif data[4] == 253: # 0xFD = 253(Requesting full DDBB download)
+	
+		num_additions = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+		s.sendto(bytes([1, 219, 0, 1, 173, num_additions]), addr)
+
+		cursor.execute("SELECT fingerprint_hash FROM users")
+		hash_data = bytearray()
+		for row in cursor:
+			hash_data += bytearray(row[0].to_bytes(4, byteorder="big"))
+		s.sendto(hash_data, addr)
 		return
 		
 	else:
