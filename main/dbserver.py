@@ -3,6 +3,7 @@
 import sys
 import sqlite3
 import socket
+import time
 from datetime import datetime
 from SuperFastHash import SuperFastHash as SFHash
  
@@ -68,7 +69,7 @@ def enroller_listener(d, s):
 		checksum_data = 256 # Data packet starts with 0x5A + 0xA5 + 0x00 + 0x01 = 256
 		fingerprint = bytearray()
 		
-		for x in range(0,8):
+		for x in range(8):
 		
 			# receive data from client (data, addr)
 			d = s.recvfrom(64)
@@ -95,6 +96,7 @@ def enroller_listener(d, s):
 
 			print('Checksum calculated up to this point = ' + str(checksum_data%65536))
 
+		# TO-DO: Fail condition when checksum is wrong
 		user = (None, 'David López Chica', 1, fingerprint, SFHash(fingerprint), datetime.now())
 		cursor.execute("INSERT INTO users VALUES (?,?,?,?,?,?)", user)
 		conn.commit()
@@ -127,18 +129,81 @@ def scanner_listener(d, s):
 	
 	elif data[4] == 93: # 0x5D == 93(Requesting partial DDBB download)
 		
+		num_enrolled = data[5]
+		num_packets_sent = num_enrolled//16
+		if num_enrolled%16 > 0:
+			num_packets_sent += 1
+
+		cursor.execute("SELECT fingerprint_hash FROM users")
+		ddbb_hashes = []
+		for row in cursor:
+			ddbb_hashes.append(row[0])
+		print("ddbb_hashes")
+		print(ddbb_hashes)
+		
+		deletion_hashes = []
+			
+		for packet in range(num_packets_sent):
+			d = s.recvfrom(64)
+			data = d[0]
+			addr = d[1]
+			length = len(d[0])
+			num_fingerprints = length//4
+			
+			for fingerprint in range(num_fingerprints):
+				fingerprint_hash = int.from_bytes([data[fingerprint*4], data[fingerprint*4 + 1], data[fingerprint*4 + 2], data[fingerprint*4 + 3]], byteorder='big')
+				if fingerprint_hash in ddbb_hashes:
+					ddbb_hashes.remove(fingerprint_hash)
+					print("Exists: " + str(fingerprint_hash)) 
+				else:
+					deletion_hashes.append(packet*16 + fingerprint) # Gives the fingerprint_num to delete, instead of the hash
+					print("Remove fingerprint "+ str(packet*16 + fingerprint) + ": " + str(fingerprint_hash))
+			
+		print("Update list...")
+		print(ddbb_hashes)
+		
+		# Delete list
+		if len(deletion_hashes) > 0:
+			s.sendto(bytes([1, 219, 0, 1, 222, len(deletion_hashes)]), addr)
+			time.sleep(1)
+			print(bytes(deletion_hashes))
+			s.sendto(bytes(deletion_hashes), addr)
+			time.sleep(1)
+
+		# Addition list
+		if len(ddbb_hashes) > 0:
+			s.sendto(bytes([1, 219, 0, 1, 173, len(ddbb_hashes)]), addr)
+			time.sleep(1)
+			addition_hashes = bytearray()
+			for fingerprint in ddbb_hashes:
+				addition_hashes.extend(fingerprint.to_bytes(4, byteorder='big'))
+			print(addition_hashes)
+			s.sendto(addition_hashes, addr)
+			time.sleep(1)
+			
+		# End sync process
+		s.sendto(bytes([1, 219, 0, 1, 13, 0]), addr)
 		return
 	
 	elif data[4] == 253: # 0xFD = 253(Requesting full DDBB download)
 	
 		num_additions = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+		if num_additions == 0:
+			s.sendto(bytes([1, 219, 0, 1, 13, 0]), addr)
+			return
+
 		s.sendto(bytes([1, 219, 0, 1, 173, num_additions]), addr)
+		time.sleep(1)
 
 		cursor.execute("SELECT fingerprint_hash FROM users")
 		hash_data = bytearray()
 		for row in cursor:
 			hash_data += bytearray(row[0].to_bytes(4, byteorder="big"))
 		s.sendto(hash_data, addr)
+		time.sleep(1)
+
+		# End sync process
+		s.sendto(bytes([1, 219, 0, 1, 13, 0]), addr)
 		return
 		
 	else:
