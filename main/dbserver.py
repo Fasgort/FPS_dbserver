@@ -6,11 +6,15 @@ import socket
 import time
 from datetime import datetime
 from SuperFastHash import SuperFastHash as SFHash
- 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+HOST = ''	# Symbolic name meaning all available interfaces
+PORT = 40444	# Arbitrary non-privileged port
+AES_KEY = bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6])
+aesgcm = AESGCM(AES_KEY)
 conn = sqlite3.connect("fingerprint.db")
- 
 cursor = conn.cursor()
- 
+
 ### creating tables
 
 
@@ -47,16 +51,11 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS log
                """)
 
 
-HOST = ''	# Symbolic name meaning all available interfaces
-PORT = 40444	# Arbitrary non-privileged port
-
 # Listeners
 
-def enroller_listener(d, s):
+def enroller_listener(data, addr, s):
 
-	data = d[0]
-	addr = d[1]
-	length = len(d[0])
+	length = len(data)
 	
 	if data[4] == 17: # 0x11 == 17(Enrolling)
 		
@@ -69,32 +68,31 @@ def enroller_listener(d, s):
 		checksum_data = 256 # Data packet starts with 0x5A + 0xA5 + 0x00 + 0x01 = 256
 		fingerprint = bytearray()
 		
-		for x in range(8):
+		# receive data from client (data, addr)
+		d = s.recvfrom(1024)
+		data = d[0]
+		addr = d[1]
+	
+		if not data:
+			return
+	
+		print(data.hex())
 		
-			# receive data from client (data, addr)
-			d = s.recvfrom(64)
-			data = d[0]
-			addr = d[1]
-			length = len(d[0])
+		# Decrypt the packet
+		nonce = data[0:12]
+		message_withtag = data[12:]
 		
-			if not data:
-				break
+		data = aesgcm.decrypt(nonce, message_withtag, None) # TO-DO fail check
+		length = len(data)
+		print(data.hex())
 		
-			print(data.hex())
+		for i in range(length-2):
+			checksum_data += data[i]
+			fingerprint.append(data[i])
 		
-			if x == 7:
-				checksum_reported = data[length-2] + data[length-1]*256 # Little endian
-				print('Checksum reported from the FPS = ' + str(checksum_reported))
-				for i in range(0,length-2):
-					checksum_data += data[i]
-					fingerprint.append(data[i])
-
-			else:
-				for i in range(0,length):
-					checksum_data += data[i]
-					fingerprint.append(data[i])
-
-			print('Checksum calculated up to this point = ' + str(checksum_data%65536))
+		print('Checksum calculated up to this point = ' + str(checksum_data%65536))
+		checksum_reported = data[length-2] + data[length-1]*256 # Little endian	
+		print('Checksum reported from the FPS = ' + str(checksum_reported))
 
 		# TO-DO: Fail condition when checksum is wrong
 		user = (None, 'David López Chica', 1, fingerprint, SFHash(fingerprint), datetime.now())
@@ -108,11 +106,9 @@ def enroller_listener(d, s):
 		s.sendto(bytes([1, 219, 0, 1, 238]), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
 		return
 	
-def scanner_listener(d, s):
+def scanner_listener(data, addr, s):
 
-	data = d[0]
-	addr = d[1]
-	length = len(d[0])
+	length = len(data)
 	
 	if data[4] == 34: # 0x22 == 34(SyncDB)
 	
@@ -130,8 +126,8 @@ def scanner_listener(d, s):
 	elif data[4] == 93: # 0x5D == 93(Requesting partial DDBB download)
 		
 		num_enrolled = data[5]
-		num_packets_sent = num_enrolled//16
-		if num_enrolled%16 > 0:
+		num_packets_sent = num_enrolled//128
+		if num_enrolled%128 > 0:
 			num_packets_sent += 1
 
 		cursor.execute("SELECT fingerprint_hash FROM users")
@@ -144,11 +140,23 @@ def scanner_listener(d, s):
 		deletion_hashes = []
 			
 		for packet in range(num_packets_sent):
-			d = s.recvfrom(64)
+			d = s.recvfrom(1024)
 			data = d[0]
 			addr = d[1]
-			length = len(d[0])
-			num_fingerprints = length//4
+			
+			# Decrypt the packet
+			nonce = data[0:12]
+			message_withtag = data[12:]
+			
+			data = aesgcm.decrypt(nonce, message_withtag, None) # TO-DO fail check
+			print(data.hex())
+			
+			if packet == num_packets_sent-1:
+				num_fingerprints = num_enrolled%128
+				if num_fingerprints == 0:
+					num_fingerprints = 128
+			else:
+				num_fingerprints = 128
 			
 			for fingerprint in range(num_fingerprints):
 				fingerprint_hash = int.from_bytes([data[fingerprint*4], data[fingerprint*4 + 1], data[fingerprint*4 + 2], data[fingerprint*4 + 3]], byteorder='big')
@@ -156,8 +164,8 @@ def scanner_listener(d, s):
 					ddbb_hashes.remove(fingerprint_hash)
 					print("Exists: " + str(fingerprint_hash)) 
 				else:
-					deletion_hashes.append(packet*16 + fingerprint) # Gives the fingerprint_num to delete, instead of the hash
-					print("Remove fingerprint "+ str(packet*16 + fingerprint) + ": " + str(fingerprint_hash))
+					deletion_hashes.append(packet*128 + fingerprint) # Gives the fingerprint_num to delete, instead of the hash
+					print("Remove fingerprint "+ str(packet*128 + fingerprint) + ": " + str(fingerprint_hash))
 			
 		print("Update list...")
 		print(ddbb_hashes)
@@ -244,19 +252,28 @@ print('Socket bind complete')
 while 1:
 
 	# receive data from client (data, addr)
-	d = s.recvfrom(64)
+	d = s.recvfrom(1024)
 	data = d[0]
 	addr = d[1]
-	
-	if not data or len(d[0])<5 or data[0] != 1: # First byte has always to be 0x01
+		
+	#if not data or len(data)<16 or data[0] != 1: # First byte has always to be 0x01
+	if not data:
 		break
+		
+	print(data.hex())
+		
+	# Decrypt the packet
+	nonce = data[0:12]
+	message_withtag = data[12:]
+	
+	data = aesgcm.decrypt(nonce, message_withtag, None) # TO-DO fail check
+	print(data.hex())
 
 	listener = code_interpreter(data[1])
 	if listener == 'error':
 		s.sendto(bytes([1, 219, 0, 1, 238]), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
 		break
 	
-	print(data.hex())
-	listener(d, s)
+	listener(data, addr, s)
 	
 s.close()
