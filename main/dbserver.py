@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import sys
+import os
 import sqlite3
 import socket
 import time
@@ -57,7 +58,7 @@ def enroller_listener(data, addr, s):
 
 	if data[4] == 17: # 0x11 == 17(Enrolling)
 
-		s.sendto(bytes([1, 219, 0, 1, 170]), addr) # 0x01 0xDB 0x00 0x01 0xAA == 1 219 0 1 170 (AA okay)
+		s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 170])), addr) # 0x01 0xDB 0x00 0x01 0xAA == 1 219 0 1 170 (AA okay)
 		return
 
 	elif data[4] == 29: # 0x1D == 29 (Sending data)
@@ -107,14 +108,14 @@ def enroller_listener(data, addr, s):
 
 	else:
 
-		s.sendto(bytes([1, 219, 0, 1, 238]), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
+		s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 238])), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
 		return
 
 def scanner_listener(data, addr, s):
 
 	if data[4] == 34: # 0x22 == 34(SyncDB)
 
-		s.sendto(bytes([1, 219, 0, 1, 170]), addr) # 0x01 0xDB 0x00 0x01 0xAA == 1 219 0 1 170 (AA okay)
+		s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 170])), addr) # 0x01 0xDB 0x00 0x01 0xAA == 1 219 0 1 170 (AA okay)
 		return
 
 	elif data[4] == 48: # 0x30 == 48(Requesting fingerprint)
@@ -122,7 +123,7 @@ def scanner_listener(data, addr, s):
 		fingerprint_hash_requested = int.from_bytes([data[5], data[6], data[7], data[8]], byteorder='big')
 		cursor.execute("SELECT fingerprint_data FROM users WHERE fingerprint_hash=?", (str(fingerprint_hash_requested),))
 		fingerprint_data = cursor.fetchone()[0]
-		s.sendto(fingerprint_data, addr)
+		s.sendto(encrypt_bytes(fingerprint_data), addr)
 		return
 
 	elif data[4] == 93: # 0x5D == 93(Requesting partial DDBB download)
@@ -187,51 +188,51 @@ def scanner_listener(data, addr, s):
 
 		# Delete list
 		if len(deletion_hashes) > 0:
-			s.sendto(bytes([1, 219, 0, 1, 222, len(deletion_hashes)]), addr)
+			s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 222, len(deletion_hashes)])), addr)
 			time.sleep(1)
 			print(bytes(deletion_hashes))
-			s.sendto(bytes(deletion_hashes), addr)
+			s.sendto(encrypt_bytes(bytes(deletion_hashes)), addr)
 			time.sleep(1)
 
 		# Addition list
 		if len(ddbb_hashes) > 0:
-			s.sendto(bytes([1, 219, 0, 1, 173, len(ddbb_hashes)]), addr)
+			s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 173, len(ddbb_hashes)])), addr)
 			time.sleep(1)
 			addition_hashes = bytearray()
 			for fingerprint in ddbb_hashes:
 				addition_hashes.extend(fingerprint.to_bytes(4, byteorder='big'))
 			print(addition_hashes)
-			s.sendto(addition_hashes, addr)
+			s.sendto(encrypt_bytes(addition_hashes), addr)
 			time.sleep(1)
 
 		# End sync process
-		s.sendto(bytes([1, 219, 0, 1, 13, 0]), addr)
+		s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 13, 0])), addr)
 		return
 
 	elif data[4] == 253: # 0xFD = 253(Requesting full DDBB download)
 
 		num_additions = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
 		if num_additions == 0:
-			s.sendto(bytes([1, 219, 0, 1, 13, 0]), addr)
+			s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 13, 0])), addr)
 			return
 
-		s.sendto(bytes([1, 219, 0, 1, 173, num_additions]), addr)
+		s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 173, num_additions])), addr)
 		time.sleep(1)
 
 		cursor.execute("SELECT fingerprint_hash FROM users")
 		hash_data = bytearray()
 		for row in cursor:
 			hash_data += bytearray(row[0].to_bytes(4, byteorder="big"))
-		s.sendto(hash_data, addr)
+		s.sendto(encrypt_bytes(hash_data), addr)
 		time.sleep(1)
 
 		# End sync process
-		s.sendto(bytes([1, 219, 0, 1, 13, 0]), addr)
+		s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 13, 0])), addr)
 		return
 
 	else:
 
-		s.sendto(bytes([1, 219, 0, 1, 238]), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
+		s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 238])), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
 		return
 
 listener_switcher = {
@@ -246,6 +247,11 @@ def code_interpreter(argument):
     # Return the function
     return func
 
+def encrypt_bytes(data):
+	nonce = os.urandom(12)
+	message_withtag = aesgcm.encrypt(nonce, data, None)
+	return nonce+message_withtag
+	
 # Datagram (udp) socket
 try :
 	s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -292,7 +298,7 @@ while 1:
 	if data[0] == 1 and len(data) >= 5: # First byte has always to be 0x01
 		listener = code_interpreter(data[1])
 		if listener == 'error':
-			s.sendto(bytes([1, 219, 0, 1, 238]), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
+			s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 238])), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
 		else:
 			listener(data, addr, s)
 
