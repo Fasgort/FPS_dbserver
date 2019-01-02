@@ -15,8 +15,8 @@ aesgcm = AESGCM(AES_KEY)
 conn = sqlite3.connect("fingerprint.db")
 cursor = conn.cursor()
 
-### creating tables
 
+### creating tables
 
 # ID_user, user_name, group, template_data, template_hash, signup_date expressed in UNIX time
 # group works as linux privileges work, in this case:
@@ -25,7 +25,7 @@ cursor = conn.cursor()
 cursor.execute("""CREATE TABLE IF NOT EXISTS users
                   (ID_user INTEGER PRIMARY KEY, user_name TEXT NOT NULL,
                   group_user INTEGER NOT NULL, fingerprint_data BLOB NOT NULL,
-                  fingerprint_hash INTEGER NOT NULL, fingerprint_scan_date INTEGER NOT NULL) 
+                  fingerprint_hash INTEGER NOT NULL, fingerprint_scan_date INTEGER NOT NULL)
                """)
 
 # ID_FPS, signup_date (unix time), location, group_access
@@ -35,7 +35,7 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS users
 # even if the user is in a different group with acess 1
 cursor.execute("""CREATE TABLE IF NOT EXISTS fps
                   (ID_FPS INTEGER PRIMARY KEY, signup_date INTEGER NOT NULL,
-                  location TEXT NOT NULL, group_access INTEGER NOT NULL) 
+                  location TEXT NOT NULL, group_access INTEGER NOT NULL)
                """)
 
 # ID_log, ID_user, ID_FPS, date, access_granted
@@ -55,43 +55,47 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS log
 
 def enroller_listener(data, addr, s):
 
-	length = len(data)
-	
 	if data[4] == 17: # 0x11 == 17(Enrolling)
-		
+
 		s.sendto(bytes([1, 219, 0, 1, 170]), addr) # 0x01 0xDB 0x00 0x01 0xAA == 1 219 0 1 170 (AA okay)
 		return
 
 	elif data[4] == 29: # 0x1D == 29 (Sending data)
-	
+
 		checksum_reported = 0
 		checksum_data = 256 # Data packet starts with 0x5A + 0xA5 + 0x00 + 0x01 = 256
 		fingerprint = bytearray()
-		
-		# receive data from client (data, addr)
-		d = s.recvfrom(1024)
+
+		try:
+			# receive data from client (data, addr)
+			d = s.recvfrom(1024)
+		except socket.timeout:
+			return
+
 		data = d[0]
 		addr = d[1]
-	
-		if not data:
+
+		if not data or len(data) < 28:
 			return
-	
+
+		try:
+			# Decrypt the packet
+			nonce = data[0:12]
+			message_withtag = data[12:]
+			data = aesgcm.decrypt(nonce, message_withtag, None) # TO-DO fail check
+		except Exception: # All the possible exceptions should be safely ignored
+			print("Failed decryption at fingerprint upload.")
+			return
+
 		print(data.hex())
-		
-		# Decrypt the packet
-		nonce = data[0:12]
-		message_withtag = data[12:]
-		
-		data = aesgcm.decrypt(nonce, message_withtag, None) # TO-DO fail check
 		length = len(data)
-		print(data.hex())
-		
+
 		for i in range(length-2):
 			checksum_data += data[i]
 			fingerprint.append(data[i])
-		
+
 		print('Checksum calculated up to this point = ' + str(checksum_data%65536))
-		checksum_reported = data[length-2] + data[length-1]*256 # Little endian	
+		checksum_reported = data[length-2] + data[length-1]*256 # Little endian
 		print('Checksum reported from the FPS = ' + str(checksum_reported))
 
 		# TO-DO: Fail condition when checksum is wrong
@@ -100,21 +104,19 @@ def enroller_listener(data, addr, s):
 		conn.commit()
 
 		return
-	
+
 	else:
-		
+
 		s.sendto(bytes([1, 219, 0, 1, 238]), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
 		return
-	
+
 def scanner_listener(data, addr, s):
 
-	length = len(data)
-	
 	if data[4] == 34: # 0x22 == 34(SyncDB)
-	
+
 		s.sendto(bytes([1, 219, 0, 1, 170]), addr) # 0x01 0xDB 0x00 0x01 0xAA == 1 219 0 1 170 (AA okay)
 		return
-	
+
 	elif data[4] == 48: # 0x30 == 48(Requesting fingerprint)
 
 		fingerprint_hash_requested = int.from_bytes([data[5], data[6], data[7], data[8]], byteorder='big')
@@ -122,9 +124,9 @@ def scanner_listener(data, addr, s):
 		fingerprint_data = cursor.fetchone()[0]
 		s.sendto(fingerprint_data, addr)
 		return
-	
+
 	elif data[4] == 93: # 0x5D == 93(Requesting partial DDBB download)
-		
+
 		num_enrolled = data[5]
 		num_packets_sent = num_enrolled//128
 		if num_enrolled%128 > 0:
@@ -136,40 +138,53 @@ def scanner_listener(data, addr, s):
 			ddbb_hashes.append(row[0])
 		print("ddbb_hashes")
 		print(ddbb_hashes)
-		
+
 		deletion_hashes = []
-			
+
 		for packet in range(num_packets_sent):
-			d = s.recvfrom(1024)
+
+			try:
+				# receive data from client (data, addr)
+				d = s.recvfrom(1024)
+			except socket.timeout:
+				return
+
 			data = d[0]
 			addr = d[1]
-			
-			# Decrypt the packet
-			nonce = data[0:12]
-			message_withtag = data[12:]
-			
-			data = aesgcm.decrypt(nonce, message_withtag, None) # TO-DO fail check
+
+			if not data or len(data) < 28:
+				return
+
+			try:
+				# Decrypt the packet
+				nonce = data[0:12]
+				message_withtag = data[12:]
+				data = aesgcm.decrypt(nonce, message_withtag, None) # TO-DO fail check
+			except Exception: # All the possible exceptions should be safely ignored
+				print("Failed decryption at hash list sync check.")
+				return
+
 			print(data.hex())
-			
+
 			if packet == num_packets_sent-1:
 				num_fingerprints = num_enrolled%128
 				if num_fingerprints == 0:
 					num_fingerprints = 128
 			else:
 				num_fingerprints = 128
-			
+
 			for fingerprint in range(num_fingerprints):
 				fingerprint_hash = int.from_bytes([data[fingerprint*4], data[fingerprint*4 + 1], data[fingerprint*4 + 2], data[fingerprint*4 + 3]], byteorder='big')
 				if fingerprint_hash in ddbb_hashes:
 					ddbb_hashes.remove(fingerprint_hash)
-					print("Exists: " + str(fingerprint_hash)) 
+					print("Exists: " + str(fingerprint_hash))
 				else:
 					deletion_hashes.append(packet*128 + fingerprint) # Gives the fingerprint_num to delete, instead of the hash
 					print("Remove fingerprint "+ str(packet*128 + fingerprint) + ": " + str(fingerprint_hash))
-			
+
 		print("Update list...")
 		print(ddbb_hashes)
-		
+
 		# Delete list
 		if len(deletion_hashes) > 0:
 			s.sendto(bytes([1, 219, 0, 1, 222, len(deletion_hashes)]), addr)
@@ -188,13 +203,13 @@ def scanner_listener(data, addr, s):
 			print(addition_hashes)
 			s.sendto(addition_hashes, addr)
 			time.sleep(1)
-			
+
 		# End sync process
 		s.sendto(bytes([1, 219, 0, 1, 13, 0]), addr)
 		return
-	
+
 	elif data[4] == 253: # 0xFD = 253(Requesting full DDBB download)
-	
+
 		num_additions = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
 		if num_additions == 0:
 			s.sendto(bytes([1, 219, 0, 1, 13, 0]), addr)
@@ -213,12 +228,12 @@ def scanner_listener(data, addr, s):
 		# End sync process
 		s.sendto(bytes([1, 219, 0, 1, 13, 0]), addr)
 		return
-		
+
 	else:
-	
+
 		s.sendto(bytes([1, 219, 0, 1, 238]), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
 		return
-	
+
 listener_switcher = {
 #	219: server_listener, # DB
 	238: enroller_listener, # EE
@@ -239,41 +254,46 @@ except (socket.error, msg):
 	print('Failed to create socket. Error Code : ' + str(msg[0]) + ' Message ' + msg[1])
 	sys.exit()
 
-
 # Bind socket to local host and port
 try:
 	s.bind((HOST, PORT))
+	s.settimeout(5)
 except (socket.error, msg):
 	print('Bind failed. Error Code : ' + str(msg[0]) + ' Message ' + msg[1])
 	sys.exit()
-	
+
 print('Socket bind complete')
 
 while 1:
 
-	# receive data from client (data, addr)
-	d = s.recvfrom(1024)
+	try:
+		# receive data from client (data, addr)
+		d = s.recvfrom(1024)
+	except socket.timeout:
+		continue
+
 	data = d[0]
 	addr = d[1]
-		
-	#if not data or len(data)<16 or data[0] != 1: # First byte has always to be 0x01
-	if not data:
-		break
-		
-	print(data.hex())
-		
-	# Decrypt the packet
-	nonce = data[0:12]
-	message_withtag = data[12:]
-	
-	data = aesgcm.decrypt(nonce, message_withtag, None) # TO-DO fail check
+
+	if not data or len(data) < 28:
+		continue
+
+	try:
+		# Decrypt the packet
+		nonce = data[0:12]
+		message_withtag = data[12:]
+		data = aesgcm.decrypt(nonce, message_withtag, None) # TO-DO fail check
+	except Exception: # All the possible exceptions should be safely ignored
+		print("Failed decryption at initial communication.")
+		continue
+
 	print(data.hex())
 
-	listener = code_interpreter(data[1])
-	if listener == 'error':
-		s.sendto(bytes([1, 219, 0, 1, 238]), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
-		break
-	
-	listener(data, addr, s)
-	
+	if data[0] == 1 and len(data) >= 5: # First byte has always to be 0x01
+		listener = code_interpreter(data[1])
+		if listener == 'error':
+			s.sendto(bytes([1, 219, 0, 1, 238]), addr) # 0x01 0xDB 0x00 0x01 0xEE == 1 219 0 1 238 (EE error)
+		else:
+			listener(data, addr, s)
+
 s.close()
