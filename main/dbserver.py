@@ -175,7 +175,7 @@ def scanner_listener(data, addr, s):
 				num_fingerprints = 8
 
 			for fingerprint in range(num_fingerprints):
-				fingerprint_hash = int.from_bytes([data[fingerprint*4], data[fingerprint*4 + 1], data[fingerprint*4 + 2], data[fingerprint*4 + 3]], byteorder='big')
+				fingerprint_hash = int.from_bytes([data[fingerprint*4], data[fingerprint*4 + 1], data[fingerprint*4 + 2], data[fingerprint*4 + 3]], byteorder='little')
 				if fingerprint_hash in ddbb_hashes:
 					ddbb_hashes.remove(fingerprint_hash)
 					print("Exists: " + str(fingerprint_hash))
