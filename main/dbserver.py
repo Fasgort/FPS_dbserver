@@ -90,8 +90,10 @@ def enroller_listener(data, addr, s):
 
 		print(data.hex())
 		length = len(data)
+		id = int.from_bytes([data[0], data[1]], byteorder='little')
+		print('ID = ' + str(id))
 
-		for i in range(length-2):
+		for i in range(2, length-2):
 			checksum_data += data[i]
 			fingerprint.append(data[i])
 
@@ -100,10 +102,10 @@ def enroller_listener(data, addr, s):
 		print('Checksum reported from the FPS = ' + str(checksum_reported))
 
 		# TO-DO: Fail condition when checksum is wrong
-		user = (None, 'David López Chica', 1, fingerprint, SFHash(fingerprint), datetime.now())
+		# TO-DO: Fail condition when ID is duplicated
+		user = (id, 'David López Chica', 1, fingerprint, SFHash(bytearray([data[0], data[1]]) + fingerprint), datetime.now())
 		cursor.execute("INSERT INTO users VALUES (?,?,?,?,?,?)", user)
 		conn.commit()
-
 		return
 
 	else:
@@ -242,14 +244,22 @@ def scanner_listener(data, addr, s):
 
 				if len(data) >= 5 and data[0] == 1 and data[4] == 48:
 					fingerprint_hash_requested = int.from_bytes([data[5], data[6], data[7], data[8]], byteorder='big')
-					cursor.execute("SELECT fingerprint_data FROM users WHERE fingerprint_hash=?", (str(fingerprint_hash_requested),))
-					fingerprint_data = cursor.fetchone()[0]
-					s.sendto(encrypt_bytes(fingerprint_data), addr)
+					cursor.execute("SELECT ID_user, fingerprint_data FROM users WHERE fingerprint_hash=?", (str(fingerprint_hash_requested),))
+					fingerprint_row = cursor.fetchone()
+					fingerprint_id = fingerprint_row[0]
+					fingerprint_data = fingerprint_row[1]
+					fingerprint = bytearray(fingerprint_id.to_bytes(2, byteorder='little'))
+					fingerprint += bytearray(fingerprint_data)
+					
+					s.sendto(encrypt_bytes(bytes(fingerprint)), addr)
 
 				time.sleep(1) # Additional sleep time to allow the FPS to finish
 
 		# End sync add process
 		s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 13, 0])), addr)
+		return
+		
+	elif data[4] == 200: #0xC8 = 200(Fingerprint read)
 		return
 
 	elif data[4] == 253: # 0xFD = 253(Requesting full DDBB download)
@@ -262,7 +272,7 @@ def scanner_listener(data, addr, s):
 		cursor.execute("SELECT fingerprint_hash FROM users")
 		hash_data = bytearray()
 		for row in cursor:
-			hash_data += bytearray(row[0].to_bytes(4, byteorder="big"))
+			hash_data += bytearray(row[0].to_bytes(4, byteorder='big'))
 
 		num_packets = num_additions//8
 		if num_additions % 8 != 0:
@@ -304,9 +314,14 @@ def scanner_listener(data, addr, s):
 
 				if len(data) >= 5 and data[0] == 1 and data[4] == 48:
 					fingerprint_hash_requested = int.from_bytes([data[5], data[6], data[7], data[8]], byteorder='big')
-					cursor.execute("SELECT fingerprint_data FROM users WHERE fingerprint_hash=?", (str(fingerprint_hash_requested),))
-					fingerprint_data = cursor.fetchone()[0]
-					s.sendto(encrypt_bytes(fingerprint_data), addr)
+					cursor.execute("SELECT ID_user, fingerprint_data FROM users WHERE fingerprint_hash=?", (str(fingerprint_hash_requested),))
+					fingerprint_row = cursor.fetchone()
+					fingerprint_id = fingerprint_row[0]
+					fingerprint_data = fingerprint_row[1]
+					fingerprint = bytearray(fingerprint_id.to_bytes(2, byteorder='little'))
+					fingerprint += bytearray(fingerprint_data)
+					
+					s.sendto(encrypt_bytes(bytes(fingerprint)), addr)
 
 				time.sleep(1) # Additional sleep time to allow the FPS to finish
 
