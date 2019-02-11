@@ -260,6 +260,57 @@ def scanner_listener(data, addr, s):
 		return
 		
 	elif data[4] == 200: #0xC8 = 200(Fingerprint read)
+	
+		fps_id = int.from_bytes([data[2], data[3]], byteorder='big')
+		s.sendto(encrypt_bytes(bytes([1, 219, 0, 1, 170])), addr) # 0x01 0xDB 0x00 0x01 0xAA == 1 219 0 1 170 (AA okay)
+
+		checksum_reported = 0
+		checksum_data = 256 # Data packet starts with 0x5A + 0xA5 + 0x00 + 0x01 = 256
+		fingerprint = bytearray()
+
+		try:
+			# receive data from client (data, addr)
+			d = s.recvfrom(1024)
+		except socket.timeout:
+			return
+
+		data = d[0]
+		addr = d[1]
+
+		if not data or len(data) < 28:
+			return
+
+		try:
+			# Decrypt the packet
+			nonce = data[0:12]
+			message_withtag = data[12:]
+			data = aesgcm.decrypt(nonce, message_withtag, None) # TO-DO fail check
+		except Exception: # All the possible exceptions should be safely ignored
+			print("Failed decryption at fingerprint upload.")
+			return
+
+		print(data.hex())
+		length = len(data)
+		user_id = int.from_bytes([data[0], data[1]], byteorder='little')
+		print('ID = ' + str(user_id))
+
+		for i in range(2, length-2):
+			checksum_data += data[i]
+			fingerprint.append(data[i])
+
+		print('Checksum calculated up to this point = ' + str(checksum_data%65536))
+		checksum_reported = data[length-2] + data[length-1]*256 # Little endian
+		print('Checksum reported from the FPS = ' + str(checksum_reported))
+
+		# TO-DO: Fail condition when checksum is wrong
+		# TO-DO: Fail condition when ID is duplicated
+		user = (user_id, 'David López Chica', 1, fingerprint, SFHash(bytearray([data[0], data[1]]) + fingerprint), datetime.now())
+		cursor.execute("REPLACE INTO users VALUES (?,?,?,?,?,?)", user)
+		
+		log = (None, user_id, fps_id, datetime.now(), 1,) 
+		cursor.execute("INSERT INTO log VALUES (?,?,?,?,?)", log)
+		
+		conn.commit()
 		return
 
 	elif data[4] == 253: # 0xFD = 253(Requesting full DDBB download)
