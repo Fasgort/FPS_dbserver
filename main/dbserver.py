@@ -5,15 +5,22 @@ import os
 import sqlite3
 import socket
 import time
-from datetime import datetime
 from SuperFastHash import SuperFastHash as SFHash
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+# Django related modules
+import django
+from django.utils import timezone
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'FPS_django.settings')
+django.setup()
+from FPS_DDBB import models
+from FPS_DDBB.models import User, FPS, Log
 
 HOST = ''	# Symbolic name meaning all available interfaces
 PORT = 40444	# Arbitrary non-privileged port
 AES_KEY = bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6])
 aesgcm = AESGCM(AES_KEY)
-conn = sqlite3.connect("fingerprint.db")
+conn = sqlite3.connect("fingerprint.sqlite3")
 cursor = conn.cursor()
 
 
@@ -23,33 +30,42 @@ cursor = conn.cursor()
 # group works as linux privileges work, in this case:
 # 0111 means first number is admin, second is group 1, third is group 2, fourth is group 3...
 # So this user is not admin, but is a user of the three first groups
-cursor.execute("""CREATE TABLE IF NOT EXISTS users
-                  (ID_user INTEGER PRIMARY KEY, user_name TEXT NOT NULL,
-                  group_user INTEGER NOT NULL, fingerprint_data BLOB NOT NULL,
-                  fingerprint_hash INTEGER NOT NULL, fingerprint_scan_date INTEGER NOT NULL)
-               """)
+
+#cursor.execute("""CREATE TABLE IF NOT EXISTS users
+#                  (ID_user INTEGER PRIMARY KEY, user_name TEXT NOT NULL,
+#                  group_user INTEGER NOT NULL, fingerprint_data BLOB NOT NULL,
+#                  fingerprint_hash INTEGER NOT NULL, fingerprint_scan_date INTEGER NOT NULL)
+#               """)
+
 
 # ID_FPS, signup_date (unix time), location, group_access
 # group_access allows groups to use the FPS or not. If a user is member of a group
 # with access 1, he will be allowed access.
 # As special use, a group with access 2 won't be allowed access not matter what,
 # even if the user is in a different group with acess 1
-cursor.execute("""CREATE TABLE IF NOT EXISTS fps
-                  (ID_FPS INTEGER PRIMARY KEY, signup_date INTEGER NOT NULL,
-                  location TEXT NOT NULL, group_access INTEGER NOT NULL)
-               """)
+
+#cursor.execute("""CREATE TABLE IF NOT EXISTS fps
+#                  (ID_FPS INTEGER PRIMARY KEY, signup_date INTEGER NOT NULL,
+#                  location TEXT NOT NULL, group_access INTEGER NOT NULL)
+#               """)
+
 
 # ID_log, ID_user, ID_FPS, date, access_granted
 # Will save access_log, including user and FPS used, date, and if access was allowed or not
-cursor.execute("""CREATE TABLE IF NOT EXISTS log
-                  (ID_log INTEGER PRIMARY KEY AUTOINCREMENT, ID_user INTEGER NOT NULL,
-                  ID_FPS INTEGER NOT NULL, date INTEGER NOT NULL,
-                  access_granted INTEGER NOT NULL,
-                  CONSTRAINT fk_user FOREIGN KEY (ID_user)
-                  REFERENCES users(ID_user)
-                  CONSTRAINT fk_fps FOREIGN KEY (ID_FPS)
-                  REFERENCES fps(ID_FPS))
-               """)
+
+#cursor.execute("""CREATE TABLE IF NOT EXISTS log
+#                  (ID_log INTEGER PRIMARY KEY AUTOINCREMENT, ID_user INTEGER NOT NULL,
+#                  ID_FPS INTEGER NOT NULL, date INTEGER NOT NULL,
+#                  access_granted INTEGER NOT NULL,
+#                  CONSTRAINT fk_user FOREIGN KEY (ID_user)
+#                  REFERENCES users(ID_user)
+#                  CONSTRAINT fk_fps FOREIGN KEY (ID_FPS)
+#                  REFERENCES fps(ID_FPS))
+#               """)
+
+### Registering the single FPS unit
+fps = FPS(ID_FPS=1, signup_date=timezone.now(), location='Testing area', group_access=1)
+fps.save()
 
 
 # Listeners
@@ -103,9 +119,8 @@ def enroller_listener(data, addr, s):
 
 		# TO-DO: Fail condition when checksum is wrong
 		# TO-DO: Fail condition when ID is duplicated
-		user = (id, 'David López Chica', 1, fingerprint, SFHash(bytearray([data[0], data[1]]) + fingerprint), datetime.now())
-		cursor.execute("INSERT INTO users VALUES (?,?,?,?,?,?)", user)
-		conn.commit()
+		user = User(ID_user=id, user_name='David López Chica', group_user=1, fingerprint_data=fingerprint, fingerprint_hash=SFHash(bytearray([data[0], data[1]]) + fingerprint), fingerprint_scan_date=timezone.now())
+		user.save()
 		return
 
 	else:
@@ -303,14 +318,12 @@ def scanner_listener(data, addr, s):
 		print('Checksum reported from the FPS = ' + str(checksum_reported))
 
 		# TO-DO: Fail condition when checksum is wrong
-		# TO-DO: Fail condition when ID is duplicated
-		user = (user_id, 'David López Chica', 1, fingerprint, SFHash(bytearray([data[0], data[1]]) + fingerprint), datetime.now())
-		cursor.execute("REPLACE INTO users VALUES (?,?,?,?,?,?)", user)
+		user = User(ID_user=user_id, user_name='David López Chica', group_user=1, fingerprint_data=fingerprint, fingerprint_hash=SFHash(bytearray([data[0], data[1]]) + fingerprint), fingerprint_scan_date=timezone.now())
+		user.save()
 		
-		log = (None, user_id, fps_id, datetime.now(), 1,) 
-		cursor.execute("INSERT INTO log VALUES (?,?,?,?,?)", log)
+		log = Log(ID_user=User.objects.get(ID_user=user_id), ID_FPS=FPS.objects.get(ID_FPS=fps_id), date=timezone.now(), access_granted=1)
+		log.save()
 		
-		conn.commit()
 		return
 
 	elif data[4] == 253: # 0xFD = 253(Requesting full DDBB download)
