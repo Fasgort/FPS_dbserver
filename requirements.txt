@@ -1,4 +1,4 @@
 Django==2.2.3
 cryptography==2.7
-Pillow==6.1.0
+Pillow==6.2.0
 pyserial==3.4
